@@ -9,10 +9,10 @@ import pandas as pd
 from tqdm import tqdm
 
 
-CSV_PATH = 'EPIC_100_train.csv'
-FRAME_ROOT = 'frames'  # folder containing RGB frames per video_id
-SAVE_MODEL_PATH = 'best_tcn_action_model.pth'
-LOSS_LOG_PATH = 'training_loss_tcn.csv'
+CSV_PATH = './data/EPIC_100_train.csv'
+FRAME_ROOT = './data/frames'
+SAVE_MODEL_PATH = './drive/MyDrive/lstm_action_model.pth'   # Save to Drive if mounted
+LOSS_LOG_PATH = './drive/MyDrive/training_loss.csv'
 
 BATCH_SIZE = 8
 EPOCHS = 10
