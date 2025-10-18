@@ -8,7 +8,6 @@ from PIL import Image
 import pandas as pd
 from tqdm import tqdm
 
-
 CSV_PATH = './data/Dataset/EPIC_100_train.csv'
 FRAME_ROOT = './data/Dataset/frames'
 SAVE_MODEL_PATH = '/content/KitchenActionPrediction2/lstm_action_model.pth'   # Save to Drive if mounted
@@ -19,7 +18,6 @@ EPOCHS = 10
 LEARNING_RATE = 1e-4
 SEQUENCE_LENGTH = 16
 IMG_SIZE = 128
-
 
 
 class EpicKitchensDataset(Dataset):
@@ -57,9 +55,30 @@ class EpicKitchensDataset(Dataset):
         if len(frames) == 0:
             frames = [torch.zeros(3, IMG_SIZE, IMG_SIZE) for _ in range(self.num_frames)]
 
-        frames = torch.stack(frames)  # (T, C, H, W)
+        
         return frames, torch.tensor(verb_class), torch.tensor(noun_class)
 
+
+def pad_collate(batch):
+    
+    frames_batch, verb_batch, noun_batch = zip(*batch)
+    
+    # Find max sequence length in this batch
+    max_len = max([len(frames) for frames in frames_batch])
+    
+    padded_frames = []
+    for frames in frames_batch:
+        pad_len = max_len - len(frames)
+        if pad_len > 0:
+            pad_frames = [torch.zeros_like(frames[0]) for _ in range(pad_len)]
+            frames = frames + pad_frames
+        padded_frames.append(torch.stack(frames))
+    
+    padded_frames = torch.stack(padded_frames)  # (B, T, C, H, W)
+    verb_batch = torch.stack(verb_batch)
+    noun_batch = torch.stack(noun_batch)
+    
+    return padded_frames, verb_batch, noun_batch
 
 
 class TemporalConvNet(nn.Module):
@@ -115,7 +134,6 @@ class TCNActionModel(nn.Module):
         return verb_logits, noun_logits
 
 
-
 def train_model():
     transform = transforms.Compose([
         transforms.Resize((IMG_SIZE, IMG_SIZE)),
@@ -131,8 +149,10 @@ def train_model():
     train_size = len(full_dataset) - val_size
     train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
+                              num_workers=2, collate_fn=pad_collate)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
+                            num_workers=2, collate_fn=pad_collate)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = TCNActionModel().to(device)
