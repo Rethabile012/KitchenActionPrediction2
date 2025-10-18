@@ -180,7 +180,7 @@ def train_model():
         loss_log.append({'epoch': epoch + 1, 'train_loss': avg_train_loss, 'val_loss': avg_val_loss})
 
     pd.DataFrame(loss_log).to_csv(LOSS_LOG_PATH, index=False)
-    print(f"🏁 Training complete. Best model saved to {SAVE_MODEL_PATH}")
+    print(f"Training complete. Best model saved to {SAVE_MODEL_PATH}")
 
 
 if __name__ == '__main__':
