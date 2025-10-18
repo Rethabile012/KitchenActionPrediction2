@@ -14,8 +14,8 @@ SAVE_MODEL_PATH = '/content/KitchenActionPrediction2/lstm_action_model.pth'   # 
 LOSS_LOG_PATH = '/content/KitchenActionPrediction2/training_loss.csv'
 
 BATCH_SIZE = 8
-EPOCHS = 10
-LEARNING_RATE = 1e-4
+EPOCHS = 20
+LEARNING_RATE = 1e-3
 SEQUENCE_LENGTH = 16
 IMG_SIZE = 128
 
