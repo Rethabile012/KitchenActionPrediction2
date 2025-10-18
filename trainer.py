@@ -11,8 +11,8 @@ from tqdm import tqdm
 
 CSV_PATH = './data/Dataset/EPIC_100_train.csv'
 FRAME_ROOT = './data/Dataset/frames'
-SAVE_MODEL_PATH = './drive/MyDrive/lstm_action_model.pth'   # Save to Drive if mounted
-LOSS_LOG_PATH = './drive/MyDrive/training_loss.csv'
+SAVE_MODEL_PATH = '/content/KitchenActionPrediction2/lstm_action_model.pth'   # Save to Drive if mounted
+LOSS_LOG_PATH = '/content/KitchenActionPrediction2/training_loss.csv'
 
 BATCH_SIZE = 8
 EPOCHS = 10
