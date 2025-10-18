@@ -8,16 +8,18 @@ from PIL import Image
 import pandas as pd
 from tqdm import tqdm
 
+
 CSV_PATH = './data/Dataset/EPIC_100_train.csv'
 FRAME_ROOT = './data/Dataset/frames'
-SAVE_MODEL_PATH = '/content/KitchenActionPrediction2/lstm_action_model.pth'   # Save to Drive if mounted
+SAVE_MODEL_PATH = '/content/KitchenActionPrediction2/lstm_action_model.pth'
 LOSS_LOG_PATH = '/content/KitchenActionPrediction2/training_loss.csv'
 
 BATCH_SIZE = 8
 EPOCHS = 20
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 1e-3   
 SEQUENCE_LENGTH = 16
 IMG_SIZE = 128
+
 
 
 class EpicKitchensDataset(Dataset):
@@ -51,34 +53,29 @@ class EpicKitchensDataset(Dataset):
                     img = self.transform(img)
                 frames.append(img)
 
-        # Handle missing frames
         if len(frames) == 0:
             frames = [torch.zeros(3, IMG_SIZE, IMG_SIZE) for _ in range(self.num_frames)]
 
-        
         return frames, torch.tensor(verb_class), torch.tensor(noun_class)
 
 
 def pad_collate(batch):
-    
     frames_batch, verb_batch, noun_batch = zip(*batch)
-    
-    # Find max sequence length in this batch
     max_len = max([len(frames) for frames in frames_batch])
-    
     padded_frames = []
+
     for frames in frames_batch:
         pad_len = max_len - len(frames)
         if pad_len > 0:
             pad_frames = [torch.zeros_like(frames[0]) for _ in range(pad_len)]
             frames = frames + pad_frames
         padded_frames.append(torch.stack(frames))
-    
-    padded_frames = torch.stack(padded_frames)  # (B, T, C, H, W)
+
+    padded_frames = torch.stack(padded_frames)
     verb_batch = torch.stack(verb_batch)
     noun_batch = torch.stack(noun_batch)
-    
     return padded_frames, verb_batch, noun_batch
+
 
 
 class TemporalConvNet(nn.Module):
@@ -105,7 +102,6 @@ class TemporalConvNet(nn.Module):
 class TCNActionModel(nn.Module):
     def __init__(self, hidden_size=256, num_verb_classes=97, num_noun_classes=300):
         super().__init__()
-        # CNN for spatial features
         self.cnn = nn.Sequential(
             nn.Conv2d(3, 32, 3, stride=2, padding=1),
             nn.ReLU(),
@@ -113,9 +109,7 @@ class TCNActionModel(nn.Module):
             nn.ReLU(),
             nn.AdaptiveAvgPool2d((1, 1))
         )
-        # TCN for temporal modeling
         self.tcn = TemporalConvNet(num_inputs=64, num_channels=[128, hidden_size])
-        # Classifiers
         self.verb_head = nn.Linear(hidden_size, num_verb_classes)
         self.noun_head = nn.Linear(hidden_size, num_noun_classes)
 
@@ -123,15 +117,31 @@ class TCNActionModel(nn.Module):
         B, T, C, H, W = x.shape
         features = []
         for t in range(T):
-            f = self.cnn(x[:, t])  # (B, 64, 1, 1)
-            features.append(f.squeeze(-1).squeeze(-1))  # (B, 64)
-        features = torch.stack(features, dim=2)  # (B, 64, T)
-        tcn_out = self.tcn(features)  # (B, hidden_size, T)
-        last_out = tcn_out[:, :, -1]  # (B, hidden_size)
-
+            f = self.cnn(x[:, t])
+            features.append(f.squeeze(-1).squeeze(-1))
+        features = torch.stack(features, dim=2)
+        tcn_out = self.tcn(features)
+        last_out = tcn_out[:, :, -1]
         verb_logits = self.verb_head(last_out)
         noun_logits = self.noun_head(last_out)
         return verb_logits, noun_logits
+
+
+
+def top1_accuracy(preds, labels):
+    return (preds.argmax(dim=1) == labels).float().mean().item()
+
+def top5_accuracy(preds, labels):
+    top5 = preds.topk(5, dim=1).indices
+    correct = top5.eq(labels.view(-1, 1)).sum().item()
+    return correct / labels.size(0)
+
+def action_pair_accuracy(verb_preds, noun_preds, verb_labels, noun_labels):
+    verb_correct = verb_preds.argmax(dim=1) == verb_labels
+    noun_correct = noun_preds.argmax(dim=1) == noun_labels
+    both_correct = (verb_correct & noun_correct).float().mean().item()
+    return both_correct
+
 
 
 def train_model():
@@ -142,16 +152,15 @@ def train_model():
                              std=[0.229, 0.224, 0.225])
     ])
 
-    # Split dataset
     full_dataset = EpicKitchensDataset(CSV_PATH, FRAME_ROOT, transform)
     val_split = 0.1
     val_size = int(len(full_dataset) * val_split)
     train_size = len(full_dataset) - val_size
     train_dataset, val_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,
                               num_workers=2, collate_fn=pad_collate)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
                             num_workers=2, collate_fn=pad_collate)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -178,9 +187,13 @@ def train_model():
 
         avg_train_loss = total_train_loss / len(train_loader)
 
-        # ---- Validation ----
+        
         model.eval()
         total_val_loss = 0.0
+        total_action_acc, total_verb_top1, total_noun_top1 = 0, 0, 0
+        total_verb_top5, total_noun_top5 = 0, 0
+        num_batches = 0
+
         with torch.no_grad():
             for frames, verb_labels, noun_labels in val_loader:
                 frames, verb_labels, noun_labels = frames.to(device), verb_labels.to(device), noun_labels.to(device)
@@ -188,8 +201,25 @@ def train_model():
                 loss = criterion(verb_preds, verb_labels) + criterion(noun_preds, noun_labels)
                 total_val_loss += loss.item()
 
+                total_action_acc += action_pair_accuracy(verb_preds, noun_preds, verb_labels, noun_labels)
+                total_verb_top1 += top1_accuracy(verb_preds, verb_labels)
+                total_noun_top1 += top1_accuracy(noun_preds, noun_labels)
+                total_verb_top5 += top5_accuracy(verb_preds, verb_labels)
+                total_noun_top5 += top5_accuracy(noun_preds, noun_labels)
+                num_batches += 1
+
         avg_val_loss = total_val_loss / len(val_loader)
-        print(f"Epoch [{epoch + 1}/{EPOCHS}] - Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        avg_action_acc = total_action_acc / num_batches
+        avg_verb_top1 = total_verb_top1 / num_batches
+        avg_noun_top1 = total_noun_top1 / num_batches
+        avg_verb_top5 = total_verb_top5 / num_batches
+        avg_noun_top5 = total_noun_top5 / num_batches
+
+        print(f"\nEpoch [{epoch + 1}/{EPOCHS}] "
+              f"- Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        print(f"Verb Top1: {avg_verb_top1:.4f} | Noun Top1: {avg_noun_top1:.4f}")
+        print(f"Verb Top5: {avg_verb_top5:.4f} | Noun Top5: {avg_noun_top5:.4f}")
+        print(f"Action Pair Accuracy: {avg_action_acc:.4f}")
 
         # ---- Save Best Model ----
         if avg_val_loss < best_val_loss:
@@ -197,10 +227,15 @@ def train_model():
             torch.save(model.state_dict(), SAVE_MODEL_PATH)
             print(f"New best model saved (Val Loss: {avg_val_loss:.4f})")
 
-        loss_log.append({'epoch': epoch + 1, 'train_loss': avg_train_loss, 'val_loss': avg_val_loss})
+        loss_log.append({
+            'epoch': epoch + 1,
+            'train_loss': avg_train_loss,
+            'val_loss': avg_val_loss,
+            'action_acc': avg_action_acc
+        })
 
     pd.DataFrame(loss_log).to_csv(LOSS_LOG_PATH, index=False)
-    print(f"Training complete. Best model saved to {SAVE_MODEL_PATH}")
+    print(f"\nTraining complete. Best model saved to {SAVE_MODEL_PATH}")
 
 
 if __name__ == '__main__':
