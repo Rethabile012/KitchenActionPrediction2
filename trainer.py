@@ -10,8 +10,8 @@ from tqdm import tqdm
 
 
 CSV_PATH = 'EPIC_100_train.csv'
-FRAME_ROOT = 'frames'
-SAVE_MODEL_PATH = 'tcn_action_model.pth'
+FRAME_ROOT = 'frames'  # folder containing RGB frames per video_id
+SAVE_MODEL_PATH = 'best_tcn_action_model.pth'
 LOSS_LOG_PATH = 'training_loss_tcn.csv'
 
 BATCH_SIZE = 8
@@ -21,39 +21,45 @@ SEQUENCE_LENGTH = 16
 IMG_SIZE = 128
 
 
-class EPICKitchensDataset(Dataset):
-    def __init__(self, csv_path, frame_root, transform=None):
+
+class EpicKitchensDataset(Dataset):
+    def __init__(self, csv_path, frames_root, transform=None, num_frames=SEQUENCE_LENGTH):
         self.data = pd.read_csv(csv_path)
-        self.frame_root = frame_root
+        self.frames_root = frames_root
         self.transform = transform
+        self.num_frames = num_frames
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         row = self.data.iloc[idx]
+
         video_id = row['video_id']
         start_frame = int(row['start_frame'])
         stop_frame = int(row['stop_frame'])
         verb_class = int(row['verb_class'])
         noun_class = int(row['noun_class'])
 
-        frame_dir = os.path.join(self.frame_root, video_id)
+        video_folder = os.path.join(self.frames_root, video_id)
+        frame_indices = torch.linspace(start_frame, stop_frame, self.num_frames, dtype=torch.int)
+
         frames = []
-        frame_ids = range(start_frame, min(stop_frame, start_frame + SEQUENCE_LENGTH))
-        for i in frame_ids:
-            frame_path = os.path.join(frame_dir, f'frame_{i:010d}.jpg')
+        for f in frame_indices:
+            frame_path = os.path.join(video_folder, f'frame_{f:010d}.jpg')
             if os.path.exists(frame_path):
                 img = Image.open(frame_path).convert('RGB')
                 if self.transform:
                     img = self.transform(img)
                 frames.append(img)
 
-        if len(frames) < SEQUENCE_LENGTH:
-            frames += [frames[-1]] * (SEQUENCE_LENGTH - len(frames))
+        # Handle missing frames
+        if len(frames) == 0:
+            frames = [torch.zeros(3, IMG_SIZE, IMG_SIZE) for _ in range(self.num_frames)]
 
-        frames = torch.stack(frames)
+        frames = torch.stack(frames)  # (T, C, H, W)
         return frames, torch.tensor(verb_class), torch.tensor(noun_class)
+
 
 
 class TemporalConvNet(nn.Module):
@@ -62,22 +68,25 @@ class TemporalConvNet(nn.Module):
         layers = []
         for i in range(len(num_channels)):
             dilation_size = 2 ** i
-            in_channels = num_inputs if i == 0 else num_channels[i-1]
+            in_channels = num_inputs if i == 0 else num_channels[i - 1]
             out_channels = num_channels[i]
-            layers += [nn.Conv1d(in_channels, out_channels, kernel_size,
-                                 stride=1, padding=(kernel_size-1)*dilation_size,
-                                 dilation=dilation_size),
-                       nn.ReLU(),
-                       nn.Dropout(dropout)]
+            layers += [
+                nn.Conv1d(in_channels, out_channels, kernel_size,
+                          stride=1, padding=(kernel_size - 1) * dilation_size,
+                          dilation=dilation_size),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ]
         self.network = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.network(x)
 
+
 class TCNActionModel(nn.Module):
     def __init__(self, hidden_size=256, num_verb_classes=97, num_noun_classes=300):
         super().__init__()
-        # CNN for spatial feature extraction
+        # CNN for spatial features
         self.cnn = nn.Sequential(
             nn.Conv2d(3, 32, 3, stride=2, padding=1),
             nn.ReLU(),
@@ -87,7 +96,7 @@ class TCNActionModel(nn.Module):
         )
         # TCN for temporal modeling
         self.tcn = TemporalConvNet(num_inputs=64, num_channels=[128, hidden_size])
-        # Classification heads
+        # Classifiers
         self.verb_head = nn.Linear(hidden_size, num_verb_classes)
         self.noun_head = nn.Linear(hidden_size, num_noun_classes)
 
@@ -95,25 +104,28 @@ class TCNActionModel(nn.Module):
         B, T, C, H, W = x.shape
         features = []
         for t in range(T):
-            f = self.cnn(x[:, t])
-            features.append(f.squeeze(-1).squeeze(-1))
+            f = self.cnn(x[:, t])  # (B, 64, 1, 1)
+            features.append(f.squeeze(-1).squeeze(-1))  # (B, 64)
         features = torch.stack(features, dim=2)  # (B, 64, T)
-
         tcn_out = self.tcn(features)  # (B, hidden_size, T)
-        last_out = tcn_out[:, :, -1]  # use last timestep
+        last_out = tcn_out[:, :, -1]  # (B, hidden_size)
 
         verb_logits = self.verb_head(last_out)
         noun_logits = self.noun_head(last_out)
         return verb_logits, noun_logits
 
+
+
 def train_model():
     transform = transforms.Compose([
         transforms.Resize((IMG_SIZE, IMG_SIZE)),
-        transforms.ToTensor()
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225])
     ])
 
     # Split dataset
-    full_dataset = EPICKitchensDataset(CSV_PATH, FRAME_ROOT, transform)
+    full_dataset = EpicKitchensDataset(CSV_PATH, FRAME_ROOT, transform)
     val_split = 0.1
     val_size = int(len(full_dataset) * val_split)
     train_size = len(full_dataset) - val_size
@@ -131,10 +143,10 @@ def train_model():
     loss_log = []
 
     for epoch in range(EPOCHS):
-        # Training
+        # ---- Training ----
         model.train()
         total_train_loss = 0.0
-        for frames, verb_labels, noun_labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
+        for frames, verb_labels, noun_labels in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}"):
             frames, verb_labels, noun_labels = frames.to(device), verb_labels.to(device), noun_labels.to(device)
 
             optimizer.zero_grad()
@@ -146,7 +158,7 @@ def train_model():
 
         avg_train_loss = total_train_loss / len(train_loader)
 
-        # Validation
+        # ---- Validation ----
         model.eval()
         total_val_loss = 0.0
         with torch.no_grad():
@@ -157,18 +169,19 @@ def train_model():
                 total_val_loss += loss.item()
 
         avg_val_loss = total_val_loss / len(val_loader)
-        print(f"Epoch [{epoch+1}/{EPOCHS}] - Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        print(f"Epoch [{epoch + 1}/{EPOCHS}] - Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
 
-        # Save best model
+        # ---- Save Best Model ----
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), SAVE_MODEL_PATH)
-            print(f"New best TCN model saved (Val Loss: {avg_val_loss:.4f})")
+            print(f"New best model saved (Val Loss: {avg_val_loss:.4f})")
 
         loss_log.append({'epoch': epoch + 1, 'train_loss': avg_train_loss, 'val_loss': avg_val_loss})
 
     pd.DataFrame(loss_log).to_csv(LOSS_LOG_PATH, index=False)
-    print(f"Training complete. Best TCN model saved to {SAVE_MODEL_PATH}")
+    print(f"🏁 Training complete. Best model saved to {SAVE_MODEL_PATH}")
+
 
 if __name__ == '__main__':
     train_model()
