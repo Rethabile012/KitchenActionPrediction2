@@ -9,10 +9,10 @@ import pandas as pd
 from tqdm import tqdm
 
 
-CSV_PATH = './data/Dataset/EPIC_100_train.csv'
-FRAME_ROOT = './data/Dataset/frames'
-SAVE_MODEL_PATH = '/content/KitchenActionPrediction2/lstm_action_model.pth'
-LOSS_LOG_PATH = '/content/KitchenActionPrediction2/training_loss.csv'
+CSV_PATH = '/kaggle/input/kitchen/Dataset/EPIC_100_train.csv'
+FRAME_ROOT = '/kaggle/working/frames'
+SAVE_MODEL_PATH = 'TCN_action_model.pth'
+LOSS_LOG_PATH = 'training_loss.csv'
 
 BATCH_SIZE = 8
 EPOCHS = 20
